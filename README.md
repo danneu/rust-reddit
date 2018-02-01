@@ -4,6 +4,8 @@ Crawls all of the submissions in a subreddit.
 
 ## Example
 
+You'll need to create an app at <https://www.reddit.com/prefs/apps> to get an `app_id` and `app_secret`.
+
 - `reddit::crawl()` takes a state struct and returns a page of submissions and a new state struct.
 - Continually feed state structs back into `reddit::crawl()` until it returns `None` (end of subreddit).
 - A state struct represents the progress of a crawl through a subreddit. You can change the OAuth token and user agent
