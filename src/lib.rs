@@ -57,10 +57,20 @@ impl OAuth {
     }
 }
 
+// Example:
+//
+//     {
+//         "access_token": "xxxxxxxxxxxxxxxxxxxxxxxxxxx",
+//         "expires_in": 3600,
+//         "scope": "*",
+//         "token_type": "bearer"
+//     }
 #[derive(Deserialize)]
 struct AccessTokenResponse {
     access_token: String,
     expires_in: u64,
+    scope: String,
+    token_type: String
 }
 
 #[derive(Clone, Debug)]
@@ -294,6 +304,11 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<
     Ok(Some((subs, next_state)))
 }
 
+// Ensure a value exists in an inclusive range. If out of range, the violated bound is returned.
+//
+//     clamp(-1, 3, 10) == 3
+//     clamp(11, 3, 10) == 10
+//     clamp(5, 3, 10) == 5
 fn clamp<T>(value: T, min: T, max: T) -> T where T: std::cmp::Ord {
     if value < min {
         min
