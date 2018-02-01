@@ -12,7 +12,36 @@ use std::ops::Sub;
 const SECONDS_PER_YEAR: u64 = 31_536_000;
 const SECONDS_PER_DAY: u64 = 86_400;
 
-pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) -> Result<OAuth, reqwest::Error> {
+#[derive(Debug)]
+pub enum OAuthError {
+    BadUserCreds, // username or password wrong
+    BadAppCreds, // app_id or app_secret wrong
+    NetworkError(reqwest::Error),
+    Other(reqwest::Response),
+}
+
+// Example:
+//
+//     {
+//         "access_token": "xxxxxxxxxxxxxxxxxxxxxxxxxxx",
+//         "expires_in": 3600,
+//         "scope": "*",
+//         "token_type": "bearer"
+//     }
+#[derive(Deserialize)]
+struct RedditOAuthResponse {
+    access_token: String,
+    expires_in: u64,
+}
+
+#[derive(Deserialize)]
+struct RedditOAuthError {
+    error: String
+}
+
+// if app_id:app_secret auth combo is bad, response will be 401
+// if username or password is bad, response will be 200 with json body {"error": "invalid_grant"}
+pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) -> Result<OAuth, OAuthError> {
     let url = Url::parse("https://www.reddit.com/api/v1/access_token").unwrap();
 
     let mut form = HashMap::new();
@@ -20,24 +49,40 @@ pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) ->
     form.insert("username", creds.username.as_ref());
     form.insert("password", creds.password.as_ref());
 
-    let mut res= client.post(url)
+    let result= client.post(url)
         .basic_auth(creds.app_id.to_string(), Some(creds.app_secret.to_string()))
         .header(header::UserAgent::new(user_agent.to_string()))
         .form(&form)
-        .send()?;
+        .send();
 
-    // TODO: Handle non-200 response
-    assert_eq!(res.status(), StatusCode::Ok);
-
-    let body: AccessTokenResponse = res.json().unwrap();
-
-    let oauth = OAuth {
-        access_token: body.access_token,
-        ttl: Duration::from_secs(body.expires_in),
-        fetched_at: Instant::now(),
+    let mut response = match result {
+        Ok(res) => res,
+        Err(err) => {
+            return Err(OAuthError::NetworkError(err))
+        }
     };
 
-    Ok(oauth)
+    if response.status() == StatusCode::Unauthorized {
+        return Err(OAuthError::BadAppCreds)
+    };
+
+    if let Ok(body) = response.json::<RedditOAuthResponse>() {
+        let oauth = OAuth {
+            access_token: body.access_token,
+            ttl: Duration::from_secs(body.expires_in),
+            fetched_at: Instant::now(),
+        };
+
+        return Ok(oauth)
+    }
+
+    if let Ok(body) = response.json::<RedditOAuthError>() {
+        if body.error == "invalid_grant" {
+            return Err(OAuthError::BadUserCreds)
+        }
+    }
+
+    Err(OAuthError::Other(response))
 }
 
 #[derive(Debug)]
@@ -52,20 +97,6 @@ impl OAuth {
         let now = Instant::now();
         now.sub(oauth.fetched_at) >= oauth.ttl -Duration::from_secs(60 * 2)
     }
-}
-
-// Example:
-//
-//     {
-//         "access_token": "xxxxxxxxxxxxxxxxxxxxxxxxxxx",
-//         "expires_in": 3600,
-//         "scope": "*",
-//         "token_type": "bearer"
-//     }
-#[derive(Deserialize)]
-struct AccessTokenResponse {
-    access_token: String,
-    expires_in: u64,
 }
 
 #[derive(Clone, Debug)]
