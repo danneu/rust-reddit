@@ -96,9 +96,12 @@ pub struct OAuth {
 }
 
 impl OAuth {
+    // A token must be renewed if its ttl is expired 2 minutes from now. The 2 minutes are
+    // a quick hack to avoid the case where a token expires between the check and the request.
     pub fn should_renew(oauth: &OAuth) -> bool {
         let now = SystemTime::now();
-        now.duration_since(oauth.fetched_at).unwrap() >= safe_duration_sub(oauth.ttl, Duration::from_secs(60 * 2))
+        now.duration_since(oauth.fetched_at).unwrap()
+            >= safe_duration_sub(oauth.ttl, Duration::from_secs(60 * 2))
     }
 }
 
@@ -117,7 +120,7 @@ impl std::default::Default for OAuth {
         OAuth {
             access_token: "".to_string(),
             ttl: Duration::from_secs(0),
-            fetched_at: UNIX_EPOCH
+            fetched_at: UNIX_EPOCH,
         }
     }
 }
@@ -184,7 +187,7 @@ pub enum ApiError {
     BadToken,
     NetworkError(reqwest::Error),
     UnexpectedBody(reqwest::Error),
-    Other(Box<reqwest::Response>)
+    Other(Box<reqwest::Response>),
 }
 
 fn cloud_search(
@@ -236,17 +239,15 @@ fn cloud_search(
         .send();
 
     let mut res = match result {
-        Err(err) => {
-            return Err(ApiError::NetworkError(err))
-        },
-        Ok(res) => res
+        Err(err) => return Err(ApiError::NetworkError(err)),
+        Ok(res) => res,
     };
 
     // Let's assume bad token if 401 or 403 because reddit responds with:
     // - Unauthorized when no bearer token header at all
     // - Forbidden when token is wrong
     if res.status() == StatusCode::Unauthorized || res.status() == StatusCode::Forbidden {
-        return Err(ApiError::BadToken)
+        return Err(ApiError::BadToken);
     }
 
     if res.status() == StatusCode::Ok {
@@ -255,11 +256,9 @@ fn cloud_search(
                 let subs = body.data.children.into_iter().map(|x| x.data).collect();
                 let after = body.data.after;
 
-                return Ok((subs, after))
-            },
-            Err(err) => {
-                return Err(ApiError::UnexpectedBody(err))
+                return Ok((subs, after));
             }
+            Err(err) => return Err(ApiError::UnexpectedBody(err)),
         }
     }
 
