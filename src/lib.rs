@@ -12,16 +12,13 @@ use std::ops::Sub;
 const SECONDS_PER_YEAR: u64 = 31_536_000;
 const SECONDS_PER_DAY: u64 = 86_400;
 
-pub fn fetch_token(creds: &Creds, user_agent: &str) -> Result<OAuth, reqwest::Error> {
+pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) -> Result<OAuth, reqwest::Error> {
     let url = Url::parse("https://www.reddit.com/api/v1/access_token").unwrap();
 
     let mut form = HashMap::new();
     form.insert("grant_type", "password");
     form.insert("username", creds.username.as_ref());
     form.insert("password", creds.password.as_ref());
-
-    // TODO: Pass (reuse) in client
-    let client = reqwest::Client::new();
 
     let mut res= client.post(url)
         .basic_auth(creds.app_id.to_string(), Some(creds.app_secret.to_string()))
@@ -69,8 +66,6 @@ impl OAuth {
 struct AccessTokenResponse {
     access_token: String,
     expires_in: u64,
-    scope: String,
-    token_type: String
 }
 
 #[derive(Clone, Debug)]
@@ -130,7 +125,7 @@ impl State {
     }
 }
 
-fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<(Vec<Submission>, Option<String>)> {
+fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::Client) -> reqwest::Result<(Vec<Submission>, Option<String>)> {
     let q = {
         // Clamp lower bound to epoch to handle distance_between(epoch, max) > interval
         let min = if state.max <= UNIX_EPOCH {
@@ -160,11 +155,6 @@ fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Resu
     }
 
     let url = Url::parse_with_params(&format!("https://oauth.reddit.com/r/{}/search", state.subreddit), &params[..]).unwrap();
-
-    // MAKE REQUEST
-
-    // TODO: Pass (reuse) in client
-    let client = reqwest::Client::new();
 
     let mut res= client.get(url)
         .header(header::Authorization(format!("bearer {}", oauth.access_token)))
@@ -225,7 +215,7 @@ pub struct Submission {
     pub thumbnail: String,
 }
 
-pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<Option<(Vec<Submission>, State)>> {
+pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::Client) -> reqwest::Result<Option<(Vec<Submission>, State)>> {
     // Ensure a second has elapsed since last request.
     {
         let one_second = Duration::from_secs(1);
@@ -238,7 +228,7 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<
         std::thread::sleep(delay);
     }
 
-    let (subs, next_after) = cloud_search(oauth, state, user_agent)?;
+    let (subs, next_after) = cloud_search(oauth, state, user_agent, client)?;
 
     // If we queried with maxInterval and still found nothing,
     // then we assume we've reached the end of the subreddit

@@ -15,6 +15,7 @@ as per reddit's API guidelines.
 
 ```rust
 extern crate reddit;
+extern crate reqwest;
 
 use std::process;
 
@@ -27,13 +28,20 @@ fn main() {
         app_id: "xxxxxxxxx_xxxx".to_string(),
         app_secret: "yyyy-yyyyyyyyyyyyyyyyyyyyyy".to_string(),
     };
+    
+    // The crawler's api methods accept an http client
+    // so that you can control lower-level details about the request.
+    let client = reqwest::Client::builder()
+        // ... configure http client
+        .build()
+        .unwrap();
 
     let mut oauth = reddit::fetch_token(&creds, &user_agent).unwrap();
 
     let mut state = reddit::State::new("rust".to_string(), reddit::Config::default());
 
     loop {
-        let (subs, next_state) = match reddit::crawl(&oauth, &state, &user_agent).unwrap() {
+        let (subs, next_state) = match reddit::crawl(&oauth, &state, &user_agent, &client).unwrap() {
             None => {
                 println!("end of subreddit");
                 process::exit(0);
@@ -48,7 +56,7 @@ fn main() {
 
         // Possibly renew oauth token
         oauth = if reddit::OAuth::should_renew(&oauth) {
-            reddit::fetch_token(&creds, &user_agent).unwrap()
+            reddit::fetch_token(&creds, &user_agent, &client).unwrap()
         } else {
             oauth
         };
