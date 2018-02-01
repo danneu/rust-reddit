@@ -73,7 +73,7 @@ pub fn fetch_token(
         let oauth = OAuth {
             access_token: body.access_token,
             ttl: Duration::from_secs(body.expires_in),
-            fetched_at: Instant::now(),
+            fetched_at: SystemTime::now(),
         };
 
         return Ok(oauth);
@@ -90,15 +90,35 @@ pub fn fetch_token(
 
 #[derive(Debug)]
 pub struct OAuth {
-    access_token: String,
-    ttl: Duration,
-    fetched_at: Instant,
+    pub access_token: String,
+    pub ttl: Duration,
+    pub fetched_at: SystemTime,
 }
 
 impl OAuth {
     pub fn should_renew(oauth: &OAuth) -> bool {
-        let now = Instant::now();
-        now.sub(oauth.fetched_at) >= oauth.ttl - Duration::from_secs(60 * 2)
+        let now = SystemTime::now();
+        now.duration_since(oauth.fetched_at).unwrap() >= safe_duration_sub(oauth.ttl, Duration::from_secs(60 * 2))
+    }
+}
+
+// dur1 - dur2 fails if dur2 > dur1. this fn will just return a zero-length duration in that case.
+fn safe_duration_sub(dur1: Duration, dur2: Duration) -> Duration {
+    if dur1 < dur2 {
+        Duration::from_secs(0)
+    } else {
+        dur1 - dur2
+    }
+}
+
+impl std::default::Default for OAuth {
+    // default oauth token will always trigger renewal.
+    fn default() -> OAuth {
+        OAuth {
+            access_token: "".to_string(),
+            ttl: Duration::from_secs(0),
+            fetched_at: UNIX_EPOCH
+        }
     }
 }
 
@@ -159,12 +179,20 @@ impl State {
     }
 }
 
+#[derive(Debug)]
+pub enum ApiError {
+    BadToken,
+    NetworkError(reqwest::Error),
+    UnexpectedBody(reqwest::Error),
+    Other(Box<reqwest::Response>)
+}
+
 fn cloud_search(
     oauth: &OAuth,
     state: &State,
     user_agent: &str,
     client: &reqwest::Client,
-) -> reqwest::Result<(Vec<Submission>, Option<String>)> {
+) -> Result<(Vec<Submission>, Option<String>), ApiError> {
     let q = {
         // Clamp lower bound to epoch to handle distance_between(epoch, max) > interval
         let min = if state.max <= UNIX_EPOCH {
@@ -198,24 +226,44 @@ fn cloud_search(
         &params[..],
     ).unwrap();
 
-    let mut res = client
+    let result = client
         .get(url)
         .header(header::Authorization(format!(
             "bearer {}",
             oauth.access_token
         )))
         .header(header::UserAgent::new(user_agent.to_string()))
-        .send()?;
+        .send();
 
-    // TODO: Handle non-200 responses
-    assert_eq!(res.status(), StatusCode::Ok);
+    let mut res = match result {
+        Err(err) => {
+            return Err(ApiError::NetworkError(err))
+        },
+        Ok(res) => res
+    };
 
-    let body: CloudSearchResponse = res.json().unwrap();
+    // Let's assume bad token if 401 or 403 because reddit responds with:
+    // - Unauthorized when no bearer token header at all
+    // - Forbidden when token is wrong
+    if res.status() == StatusCode::Unauthorized || res.status() == StatusCode::Forbidden {
+        return Err(ApiError::BadToken)
+    }
 
-    let subs = body.data.children.into_iter().map(|x| x.data).collect();
-    let after = body.data.after;
+    if res.status() == StatusCode::Ok {
+        match res.json::<CloudSearchResponse>() {
+            Ok(body) => {
+                let subs = body.data.children.into_iter().map(|x| x.data).collect();
+                let after = body.data.after;
 
-    Ok((subs, after))
+                return Ok((subs, after))
+            },
+            Err(err) => {
+                return Err(ApiError::UnexpectedBody(err))
+            }
+        }
+    }
+
+    Err(ApiError::Other(Box::new(res)))
 }
 
 #[derive(Deserialize, Debug)]
@@ -266,7 +314,7 @@ pub fn crawl(
     state: &State,
     user_agent: &str,
     client: &reqwest::Client,
-) -> reqwest::Result<Option<(Vec<Submission>, State)>> {
+) -> Result<Option<(Vec<Submission>, State)>, ApiError> {
     // Ensure a second has elapsed since last request.
     {
         let one_second = Duration::from_secs(1);

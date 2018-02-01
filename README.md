@@ -36,30 +36,42 @@ fn main() {
         .build()
         .unwrap();
 
-    let mut oauth = reddit::fetch_token(&creds, &user_agent).unwrap();
+    // For more convenient code, the default oauth token always triggers renewal
+    let mut oauth = reddit::OAuth::default();
 
     let mut state = reddit::State::new("rust".to_string(), reddit::Config::default());
 
     loop {
-        let (subs, next_state) = match reddit::crawl(&oauth, &state, &user_agent, &client).unwrap() {
-            None => {
-                println!("end of subreddit");
-                process::exit(0);
+        // Every loop, we check to see if oauth token needs renewal
+        oauth = if reddit::OAuth::should_renew(&oauth) {
+            match reddit::fetch_token(&creds, &user_agent, &client) {
+                Ok(oauth) => oauth,
+                Err(err) => {
+                    eprintln!("error fetching new oauth token: {:?}", err);
+                    process::exit(1)
+                }
+            }
+        } else {
+            oauth
+        };
+        
+        // Request more submissions
+        let (subs, next_state) = match reddit::crawl(&oauth, &state, &user_agent, &client) {
+            Err(err) => {
+                eprintln!("Fetch error: {:?}", err);
+                process::exit(1)
             },
-            Some(data) => data
+            Ok(None) => {
+                println!("End of subreddit");
+                process::exit(0)
+            }
+            Ok(Some(data)) => data,
         };
 
         // Process submissions
         subs.iter().for_each(|sub| {
             println!("    -> {}", sub.title);
         });
-
-        // Possibly renew oauth token
-        oauth = if reddit::OAuth::should_renew(&oauth) {
-            reddit::fetch_token(&creds, &user_agent, &client).unwrap()
-        } else {
-            oauth
-        };
 
         // Prepare for next loop
         state = next_state;
