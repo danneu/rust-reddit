@@ -4,7 +4,7 @@ extern crate serde;
 extern crate serde_derive;
 
 use reqwest::{StatusCode, Url};
-use reqwest::header::{self};
+use reqwest::header;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use std::ops::Sub;
@@ -15,7 +15,7 @@ const SECONDS_PER_DAY: u64 = 86_400;
 #[derive(Debug)]
 pub enum OAuthError {
     BadUserCreds, // username or password wrong
-    BadAppCreds, // app_id or app_secret wrong
+    BadAppCreds,  // app_id or app_secret wrong
     NetworkError(reqwest::Error),
     Other(Box<reqwest::Response>),
 }
@@ -36,12 +36,16 @@ struct RedditOAuthResponse {
 
 #[derive(Deserialize)]
 struct RedditOAuthError {
-    error: String
+    error: String,
 }
 
 // if app_id:app_secret auth combo is bad, response will be 401
 // if username or password is bad, response will be 200 with json body {"error": "invalid_grant"}
-pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) -> Result<OAuth, OAuthError> {
+pub fn fetch_token(
+    creds: &Creds,
+    user_agent: &str,
+    client: &reqwest::Client,
+) -> Result<OAuth, OAuthError> {
     let url = Url::parse("https://www.reddit.com/api/v1/access_token").unwrap();
 
     let mut form = HashMap::new();
@@ -49,7 +53,8 @@ pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) ->
     form.insert("username", creds.username.as_ref());
     form.insert("password", creds.password.as_ref());
 
-    let result= client.post(url)
+    let result = client
+        .post(url)
         .basic_auth(creds.app_id.to_string(), Some(creds.app_secret.to_string()))
         .header(header::UserAgent::new(user_agent.to_string()))
         .form(&form)
@@ -57,13 +62,11 @@ pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) ->
 
     let mut response = match result {
         Ok(res) => res,
-        Err(err) => {
-            return Err(OAuthError::NetworkError(err))
-        }
+        Err(err) => return Err(OAuthError::NetworkError(err)),
     };
 
     if response.status() == StatusCode::Unauthorized {
-        return Err(OAuthError::BadAppCreds)
+        return Err(OAuthError::BadAppCreds);
     };
 
     if let Ok(body) = response.json::<RedditOAuthResponse>() {
@@ -73,12 +76,12 @@ pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) ->
             fetched_at: Instant::now(),
         };
 
-        return Ok(oauth)
+        return Ok(oauth);
     }
 
     if let Ok(body) = response.json::<RedditOAuthError>() {
         if body.error == "invalid_grant" {
-            return Err(OAuthError::BadUserCreds)
+            return Err(OAuthError::BadUserCreds);
         }
     }
 
@@ -95,7 +98,7 @@ pub struct OAuth {
 impl OAuth {
     pub fn should_renew(oauth: &OAuth) -> bool {
         let now = Instant::now();
-        now.sub(oauth.fetched_at) >= oauth.ttl -Duration::from_secs(60 * 2)
+        now.sub(oauth.fetched_at) >= oauth.ttl - Duration::from_secs(60 * 2)
     }
 }
 
@@ -151,18 +154,23 @@ impl State {
             page: 1,
             interval: config.init_interval,
             max: config.init_max + reddit_offset,
-            prev_request_at: UNIX_EPOCH
+            prev_request_at: UNIX_EPOCH,
         }
     }
 }
 
-fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::Client) -> reqwest::Result<(Vec<Submission>, Option<String>)> {
+fn cloud_search(
+    oauth: &OAuth,
+    state: &State,
+    user_agent: &str,
+    client: &reqwest::Client,
+) -> reqwest::Result<(Vec<Submission>, Option<String>)> {
     let q = {
         // Clamp lower bound to epoch to handle distance_between(epoch, max) > interval
         let min = if state.max <= UNIX_EPOCH {
             UNIX_EPOCH
         } else {
-            state.max -state.interval
+            state.max - state.interval
         };
         let start = min.duration_since(UNIX_EPOCH).unwrap().as_secs();
         let stop = state.max.duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -185,10 +193,17 @@ fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest
         params.push(("after", after));
     }
 
-    let url = Url::parse_with_params(&format!("https://oauth.reddit.com/r/{}/search", state.subreddit), &params[..]).unwrap();
+    let url = Url::parse_with_params(
+        &format!("https://oauth.reddit.com/r/{}/search", state.subreddit),
+        &params[..],
+    ).unwrap();
 
-    let mut res= client.get(url)
-        .header(header::Authorization(format!("bearer {}", oauth.access_token)))
+    let mut res = client
+        .get(url)
+        .header(header::Authorization(format!(
+            "bearer {}",
+            oauth.access_token
+        )))
         .header(header::UserAgent::new(user_agent.to_string()))
         .send()?;
 
@@ -197,7 +212,7 @@ fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest
 
     let body: CloudSearchResponse = res.json().unwrap();
 
-    let subs = body.data.children.into_iter().map(|x| { x.data }).collect();
+    let subs = body.data.children.into_iter().map(|x| x.data).collect();
     let after = body.data.after;
 
     Ok((subs, after))
@@ -205,18 +220,18 @@ fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest
 
 #[derive(Deserialize, Debug)]
 struct CloudSearchResponse {
-    data: CloudSearchEnvelope
+    data: CloudSearchEnvelope,
 }
 
 #[derive(Deserialize, Debug)]
 struct CloudSearchEnvelope {
     after: Option<String>,
-    children: Vec<SubmissionEnvelope>
+    children: Vec<SubmissionEnvelope>,
 }
 
 #[derive(Deserialize, Debug)]
 struct SubmissionEnvelope {
-    data: Submission
+    data: Submission,
 }
 
 #[derive(Deserialize, Debug)]
@@ -246,11 +261,18 @@ pub struct Submission {
     pub thumbnail: String,
 }
 
-pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::Client) -> reqwest::Result<Option<(Vec<Submission>, State)>> {
+pub fn crawl(
+    oauth: &OAuth,
+    state: &State,
+    user_agent: &str,
+    client: &reqwest::Client,
+) -> reqwest::Result<Option<(Vec<Submission>, State)>> {
     // Ensure a second has elapsed since last request.
     {
         let one_second = Duration::from_secs(1);
-        let elapsed = SystemTime::now().duration_since(state.prev_request_at).unwrap();
+        let elapsed = SystemTime::now()
+            .duration_since(state.prev_request_at)
+            .unwrap();
         let delay = if elapsed >= one_second {
             Duration::from_secs(0)
         } else {
@@ -264,16 +286,14 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::C
     // If we queried with maxInterval and still found nothing,
     // then we assume we've reached the end of the subreddit
     if state.interval == state.max_interval && subs.is_empty() {
-        return Ok(None)
+        return Ok(None);
     }
 
     // The next request's max will be the min of the prev request to
     // crawl back in time.
     let next_max = match next_after {
-        None =>
-            state.max - state.interval,
-        Some(_) =>
-            state.max
+        None => state.max - state.interval,
+        Some(_) => state.max,
     };
 
     // We adjust the interval until we get 50-99 submissions per request.
@@ -285,32 +305,48 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::C
         let next_interval = clamp(
             get_next_interval(state.interval, subs.len()),
             state.min_interval,
-            state.max_interval
+            state.max_interval,
         );
 
         // Interval debug info
         {
             if next_interval < state.interval {
-                println!("[interval] shrunk: {} -> {} ({} subs)", pretty_dur(state.interval), pretty_dur(next_interval), subs.len());
+                println!(
+                    "[interval] shrunk: {} -> {} ({} subs)",
+                    pretty_dur(state.interval),
+                    pretty_dur(next_interval),
+                    subs.len()
+                );
             } else if next_interval > state.interval {
-                println!("[interval] grew: {} -> {} ({} subs)", pretty_dur(state.interval), pretty_dur(next_interval), subs.len());
+                println!(
+                    "[interval] grew: {} -> {} ({} subs)",
+                    pretty_dur(state.interval),
+                    pretty_dur(next_interval),
+                    subs.len()
+                );
             } else {
-                println!("[interval] unchanged in 50-99 sweetspot: {} ({} subs)", pretty_dur(state.interval), subs.len());
+                println!(
+                    "[interval] unchanged in 50-99 sweetspot: {} ({} subs)",
+                    pretty_dur(state.interval),
+                    subs.len()
+                );
             }
         }
 
         next_interval
     } else {
         // We don't change the interval while paginating
-        println!("[interval] unchanged during pagination: {} ({} subs)", pretty_dur(state.interval), subs.len());
+        println!(
+            "[interval] unchanged during pagination: {} ({} subs)",
+            pretty_dur(state.interval),
+            subs.len()
+        );
         state.interval
     };
 
     let next_page = match next_after {
-        None =>
-            1,
-        Some(_) =>
-            state.page + 1
+        None => 1,
+        Some(_) => state.page + 1,
     };
 
     let next_state = State {
@@ -319,7 +355,7 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::C
         page: next_page,
         interval: next_interval,
         prev_request_at: SystemTime::now(),
-        .. state.clone()
+        ..state.clone()
     };
 
     Ok(Some((subs, next_state)))
@@ -330,7 +366,10 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str, client: &reqwest::C
 //     clamp(-1, 3, 10) == 3
 //     clamp(11, 3, 10) == 10
 //     clamp(5, 3, 10) == 5
-fn clamp<T>(value: T, min: T, max: T) -> T where T: std::cmp::Ord {
+fn clamp<T>(value: T, min: T, max: T) -> T
+where
+    T: std::cmp::Ord,
+{
     if value < min {
         min
     } else if value > max {
@@ -359,7 +398,7 @@ fn get_next_interval(interval: Duration, page_size: usize) -> Duration {
 
 struct DurationInDays {
     days: u64,
-    hours: f64
+    hours: f64,
 }
 
 fn pretty_dur(dur: Duration) -> String {
@@ -367,11 +406,9 @@ fn pretty_dur(dur: Duration) -> String {
     format!("{}d:{:.2}h", x.days, x.hours)
 }
 
-
 fn duration_in_days(dur: Duration) -> DurationInDays {
     let secs = dur.as_secs();
     let days = secs / SECONDS_PER_DAY;
     let hours = (secs as f64 % SECONDS_PER_DAY as f64) / f64::from(60 * 60);
     DurationInDays { days, hours }
 }
-
