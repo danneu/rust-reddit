@@ -71,23 +71,17 @@ pub struct Creds {
     pub app_secret: String,
 }
 
-// Stuff the crawler updates each crawl
 #[derive(Clone, Debug)]
-struct CrawlState {
+pub struct State {
+    subreddit: String,
+    min_interval: Duration,
+    max_interval: Duration,
+    // The things that change between crawls
     after: Option<String>,
     page: u32,
     max: SystemTime,
     interval: Duration,
     prev_request_at: SystemTime,
-}
-
-
-#[derive(Clone, Debug)]
-pub struct State {
-    subreddit: String,
-    crawl_state: CrawlState,
-    min_interval: Duration,
-    max_interval: Duration,
 }
 
 // Stuff the user configures to create init state struct.
@@ -113,18 +107,15 @@ impl std::default::Default for Config {
 impl State {
     pub fn new(subreddit: String, config: Config) -> State {
         let reddit_offset = Duration::from_secs(60 * 60 * 8);
-        let crawl_state = CrawlState {
+        State {
+            subreddit,
+            min_interval: config.min_interval,
+            max_interval: config.max_interval,
             after: None,
             page: 1,
             interval: config.init_interval,
             max: config.init_max + reddit_offset,
             prev_request_at: UNIX_EPOCH
-        };
-        State {
-            subreddit,
-            min_interval: config.min_interval,
-            max_interval: config.max_interval,
-            crawl_state,
         }
     }
 }
@@ -132,13 +123,13 @@ impl State {
 fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<(Vec<Submission>, Option<String>)> {
     let q = {
         // Clamp lower bound to epoch to handle distance_between(epoch, max) > interval
-        let min = if state.crawl_state.max <= UNIX_EPOCH {
+        let min = if state.max <= UNIX_EPOCH {
             UNIX_EPOCH
         } else {
-            state.crawl_state.max -state.crawl_state.interval
+            state.max -state.interval
         };
         let start = min.duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let stop = state.crawl_state.max.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let stop = state.max.duration_since(UNIX_EPOCH).unwrap().as_secs();
 
         format!("timestamp:{}..{}", start, stop)
     };
@@ -154,7 +145,7 @@ fn cloud_search(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Resu
         ("raw_json", "1"),
     ];
 
-    if let Some(ref after) = state.crawl_state.after {
+    if let Some(ref after) = state.after {
         params.push(("after", after));
     }
 
@@ -228,7 +219,7 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<
     // Ensure a second has elapsed since last request.
     {
         let one_second = Duration::from_secs(1);
-        let elapsed = SystemTime::now().duration_since(state.crawl_state.prev_request_at).unwrap();
+        let elapsed = SystemTime::now().duration_since(state.prev_request_at).unwrap();
         let delay = if elapsed >= one_second {
             Duration::from_secs(0)
         } else {
@@ -241,7 +232,7 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<
 
     // If we queried with maxInterval and still found nothing,
     // then we assume we've reached the end of the subreddit
-    if state.crawl_state.interval == state.max_interval && subs.is_empty() {
+    if state.interval == state.max_interval && subs.is_empty() {
         return Ok(None)
     }
 
@@ -249,9 +240,9 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<
     // crawl back in time.
     let next_max = match next_after {
         None =>
-            state.crawl_state.max - state.crawl_state.interval,
+            state.max - state.interval,
         Some(_) =>
-            state.crawl_state.max
+            state.max
     };
 
     // We adjust the interval until we get 50-99 submissions per request.
@@ -259,49 +250,44 @@ pub fn crawl(oauth: &OAuth, state: &State, user_agent: &str) -> reqwest::Result<
     // But we want <=99 results to avoid `after`-pagination which is lossy.
     // - For ex, you can't make a request for submissions between 0..9999999999 and then paginate
     //   the entire subreddit.
-    let next_interval = if state.crawl_state.page == 1 {
+    let next_interval = if state.page == 1 {
         let next_interval = clamp(
-            get_next_interval(state.crawl_state.interval, subs.len()),
+            get_next_interval(state.interval, subs.len()),
             state.min_interval,
             state.max_interval
         );
 
         // Interval debug info
         {
-            let prev_interval = state.crawl_state.interval;
-            if next_interval < prev_interval {
-                println!("[interval] shrunk: {} -> {} ({} subs)", pretty_dur(prev_interval), pretty_dur(next_interval), subs.len());
-            } else if next_interval > prev_interval {
-                println!("[interval] grew: {} -> {} ({} subs)", pretty_dur(prev_interval), pretty_dur(next_interval), subs.len());
+            if next_interval < state.interval {
+                println!("[interval] shrunk: {} -> {} ({} subs)", pretty_dur(state.interval), pretty_dur(next_interval), subs.len());
+            } else if next_interval > state.interval {
+                println!("[interval] grew: {} -> {} ({} subs)", pretty_dur(state.interval), pretty_dur(next_interval), subs.len());
             } else {
-                println!("[interval] unchanged: {} ({} subs)", pretty_dur(prev_interval), subs.len());
+                println!("[interval] unchanged in 50-99 sweetspot: {} ({} subs)", pretty_dur(state.interval), subs.len());
             }
         }
 
         next_interval
     } else {
         // We don't change the interval while paginating
-        state.crawl_state.interval
+        println!("[interval] unchanged during pagination: {} ({} subs)", pretty_dur(state.interval), subs.len());
+        state.interval
     };
 
     let next_page = match next_after {
         None =>
             1,
         Some(_) =>
-            state.crawl_state.page + 1
+            state.page + 1
     };
 
-    let next_crawl_state = CrawlState {
+    let next_state = State {
         after: next_after,
         max: next_max,
         page: next_page,
         interval: next_interval,
         prev_request_at: SystemTime::now(),
-        .. state.crawl_state.clone()
-    };
-
-    let next_state = State {
-        crawl_state: next_crawl_state,
         .. state.clone()
     };
 
