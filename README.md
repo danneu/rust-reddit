@@ -1,6 +1,6 @@
 # rust-reddit
 
-Crawls all of the submissions in a subreddit.
+Crawls all submissions in a subreddit.
 
 ## Example
 
@@ -58,3 +58,17 @@ fn main() {
     }
 }
 ```
+
+## Implementation
+
+- The crawler works by repeatedly hitting Reddit's CloudSearch API with a time range that starts now and decrements
+  backwards into the past.
+- The range is grown or shrunk based on the results of the previous request in an effort to arrive at a sweet spot 
+  of 50-99 results per request to minimize requests yet avoid Reddit's lossy `after`-pagination system.
+- The end of subreddit is reached when the crawler's range grows to MAX_INTERVAL (default: one year) yet
+  no results are found. For a range to grow that large, the crawler has to repeatedly make increasingly broad
+  requests that yield no results.
+  
+## License
+
+MIT
