@@ -2,6 +2,8 @@
 
 Crawls all submissions in a subreddit.
 
+Read more about Reddit's API: https://github.com/reddit-archive/reddit/wiki/API.
+
 ## Example
 
 You'll need to create an app at <https://www.reddit.com/prefs/apps> to get an `app_id` and `app_secret`.
