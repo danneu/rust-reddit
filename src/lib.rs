@@ -17,7 +17,7 @@ pub enum OAuthError {
     BadUserCreds, // username or password wrong
     BadAppCreds, // app_id or app_secret wrong
     NetworkError(reqwest::Error),
-    Other(reqwest::Response),
+    Other(Box<reqwest::Response>),
 }
 
 // Example:
@@ -82,7 +82,7 @@ pub fn fetch_token(creds: &Creds, user_agent: &str, client: &reqwest::Client) ->
         }
     }
 
-    Err(OAuthError::Other(response))
+    Err(OAuthError::Other(Box::new(response)))
 }
 
 #[derive(Debug)]
@@ -141,7 +141,7 @@ impl std::default::Default for Config {
 }
 
 impl State {
-    pub fn new(subreddit: String, config: Config) -> State {
+    pub fn new(subreddit: String, config: &Config) -> State {
         let reddit_offset = Duration::from_secs(60 * 60 * 8);
         State {
             subreddit,
@@ -371,7 +371,7 @@ fn pretty_dur(dur: Duration) -> String {
 fn duration_in_days(dur: Duration) -> DurationInDays {
     let secs = dur.as_secs();
     let days = secs / SECONDS_PER_DAY;
-    let hours = (secs as f64 % SECONDS_PER_DAY as f64) / 60 as f64 / 60 as f64;
+    let hours = (secs as f64 % SECONDS_PER_DAY as f64) / f64::from(60 * 60);
     DurationInDays { days, hours }
 }
 
